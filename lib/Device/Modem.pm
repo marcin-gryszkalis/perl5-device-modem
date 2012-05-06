@@ -801,6 +801,92 @@ sub parse_answer {
 
 }
 
+# almost same as _answer but reads byte-by-byte up to \n
+# doesn't use "expect" param
+# \r is removed, so it will fail if your device uses only \r 
+# \n at the beginning is silently skipped
+# \n at the end is removed too
+# timeout is used directly for 1 byte read, after first byte is received timeout*10 is used
+sub answer_toeol {
+    my $me = shift;
+    my($expect, $timeout) = @_;
+    $expect = $Device::Modem::STD_RESPONSE if (! defined($expect));
+    $timeout = $Device::Modem::TIMEOUT if (! defined($timeout));
+
+    # If we expect something, we must first match against serial input
+    my $done = (defined $expect and $expect ne '');
+
+    $me->log->write('debug', 'answer_toeol: expecting ['.($expect||'').']'.($timeout ? ' or '.($timeout/1000).' seconds timeout' : '' ) );
+
+    # Main read cycle
+    my $cycles = 0;
+    my $idle_cycles = 0;
+    my $answer = "";
+    my $start_time = time();
+    my $end_time   = 0;
+
+    # If timeout was defined, check max time (timeout is in milliseconds)
+    $me->log->write('debug', 'answer_toeol: timeout value is '.($timeout||'undef'));
+
+    if( defined $timeout && $timeout > 0 ) {
+        $end_time = $start_time + ($timeout / 1000);
+        $end_time++ if $end_time == $start_time;
+        $me->log->write( debug => 'answer_toeol: end time set to '.$end_time );
+    }
+
+    do {
+        my ($howmany,$what) = $me->port->read(1);
+
+        # Timeout count incremented only on empty readings
+        if($howmany > 0) {
+
+            if ($what eq "\n") {
+                if ($answer ne '') {
+                    $done = 1 ;
+                } else {
+                    # skip \n at the beginning (so some lone \n will pass unnoticed)
+                }
+            } else {
+                $answer .= $what unless $what eq "\r";
+            }
+
+            # reset timeout
+            $start_time = time();
+            $end_time = $start_time + ($timeout * 10 / 1000);
+            $end_time++ if $end_time == $start_time;
+            $me->log->write( debug => 'answer_toeol: timeout reset - end time set to '.$end_time );
+
+        # Check if we reached max time for timeout (only if end_time is defined)
+        } elsif( $end_time > 0 ) {
+
+            $done = (time >= $end_time) ? 1 : 0;
+
+            # Read last chars in read queue
+            if( $done )
+            {
+                $me->log->write('info', 'reached timeout max wait without response');
+            }
+
+        # Else we have done (no timeout set)
+        } else {
+
+            $done = 1;
+        }
+
+        $me->log->write('debug', 'done='.$done.' end='.$end_time.' now='.time().' start='.$start_time );
+
+    } while (not $done);
+
+    $me->log->write('info', 'answer: read ['.($answer||'').']' );
+
+    # Flush receive and trasmit buffers
+    $me->port->purge_all;
+
+    return $answer;
+
+}
+
+
 1;
 
 =head1 NAME
